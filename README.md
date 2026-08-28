@@ -14,6 +14,4 @@ Upgrade installed packages normally:
 brew upgrade -g
 ```
 
-Set `HOMEBREW_AUTO_UPDATE_SECS=0` in the shell environment to refresh taps on every upgrade invocation.
-
-The qBittorrent cask checks for stable upstream releases every 15 minutes. Each update verifies qBittorrent's official prebuilt macOS DMG against the project's pinned PGP signing key, checks that the SourceForge mirror contains the identical artifact, validates and installs the cask without building from source, and publishes its SHA-256.
+The qBittorrent cask checks for stable upstream releases every Monday and Thursday. Each update verifies qBittorrent's official prebuilt macOS DMG against the project's pinned PGP signing key, checks that the SourceForge mirror contains the identical artifact, validates and installs the cask without building from source, and publishes its SHA-256.
