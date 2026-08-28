@@ -97,7 +97,7 @@ jobs:
       - name: Verify and publish the official prebuilt DMG
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP: ${{ steps.homebrew.outputs.tap-name }}
+          TAP: ${{ steps.homebrew.outputs['tap-name'] }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail

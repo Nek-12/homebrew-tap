@@ -19,7 +19,7 @@ jobs:
 
       - name: Validate the prebuilt cask
         env:
-          TAP: ${{ steps.homebrew.outputs.tap-name }}
+          TAP: ${{ steps.homebrew.outputs['tap-name'] }}
         run: |
           set -euo pipefail
 
