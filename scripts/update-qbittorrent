@@ -8,6 +8,11 @@ readonly SIGNING_KEY_URL="https://raw.githubusercontent.com/qbittorrent/qBittorr
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cask_path="$repo_root/Casks/qbittorrent.rb"
+verify_current=false
+if [[ "${1:-}" == "--verify-current" ]]; then
+  verify_current=true
+  shift
+fi
 expected_version="${1:-}"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -48,7 +53,7 @@ if [[ -z "$current_version" ]]; then
   echo "Could not read the current qBittorrent cask version." >&2
   exit 1
 fi
-if [[ "$current_version" == "$version" ]]; then
+if [[ "$current_version" == "$version" && "$verify_current" == false ]]; then
   echo "qBittorrent $version is already published."
   exit 0
 fi

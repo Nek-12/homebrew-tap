@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
+    inputs:
+      verify_current:
+        description: Verify and install the published release without changing it
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -68,7 +73,7 @@ jobs:
           fi
 
       - name: Keep scheduled updates enabled
-        if: steps.release.outputs.needs-update == 'false'
+        if: steps.release.outputs.needs-update == 'false' && inputs.verify_current != true
         run: |
           set -euo pipefail
 
@@ -84,7 +89,7 @@ jobs:
           git push origin HEAD:master
 
   update:
-    if: needs.check.outputs.needs-update == 'true'
+    if: needs.check.outputs.needs-update == 'true' || inputs.verify_current == true
     needs: check
     runs-on: macos-15
     steps:
@@ -99,14 +104,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP: nek-12/tap
           VERSION: ${{ needs.check.outputs.version }}
+          VERIFY_CURRENT: ${{ inputs.verify_current }}
         run: |
           set -euo pipefail
 
-          scripts/update-qbittorrent "$VERSION"
-          if git diff --quiet -- Casks/qbittorrent.rb; then
-            echo "qBittorrent $VERSION was already published."
-            exit 0
+          update_args=("$VERSION")
+          if [[ "$VERIFY_CURRENT" == "true" ]]; then
+            update_args=(--verify-current "$VERSION")
           fi
+          scripts/update-qbittorrent "${update_args[@]}"
 
           brew trust --cask "$TAP/qbittorrent"
           brew style "$TAP/qbittorrent"
@@ -121,6 +127,11 @@ jobs:
           fi
 
           git diff --check
+          if git diff --quiet -- Casks/qbittorrent.rb; then
+            echo "Verified published qBittorrent $VERSION."
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/qbittorrent.rb
