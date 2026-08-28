@@ -19,7 +19,7 @@ jobs:
 
       - name: Validate the prebuilt cask
         env:
-          TAP: ${{ steps.homebrew.outputs['tap-name'] }}
+          TAP: nek-12/tap
         run: |
           set -euo pipefail
 
