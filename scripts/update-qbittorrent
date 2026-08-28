@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly EXPECTED_SIGNING_KEY="D8F3DA77AAC6741053599C136E4A2D025B7CC9A2"
+readonly RELEASE_API="https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest"
+readonly SIGNING_KEY_URL="https://raw.githubusercontent.com/qbittorrent/qBittorrent/master/5B7CC9A2.asc"
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cask_path="$repo_root/Casks/qbittorrent.rb"
+expected_version="${1:-}"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+curl_args=(
+  --fail
+  --location
+  --retry 5
+  --retry-all-errors
+  --silent
+  --show-error
+)
+github_headers=(
+  -H "Accept: application/vnd.github+json"
+  -H "X-GitHub-Api-Version: 2022-11-28"
+)
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  github_headers+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+fi
+
+release_json="$tmp_dir/release.json"
+curl "${curl_args[@]}" "${github_headers[@]}" "$RELEASE_API" -o "$release_json"
+
+version="$(
+  jq -er '
+    select(.draft == false and .prerelease == false)
+    | .tag_name
+    | capture("^release-(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$").version
+  ' "$release_json"
+)"
+if [[ -n "$expected_version" && "$version" != "$expected_version" ]]; then
+  echo "Latest upstream version changed from $expected_version to $version during the update." >&2
+  exit 1
+fi
+
+current_version="$(sed -nE 's/^  version "([^"]+)"$/\1/p' "$cask_path")"
+if [[ -z "$current_version" ]]; then
+  echo "Could not read the current qBittorrent cask version." >&2
+  exit 1
+fi
+if [[ "$current_version" == "$version" ]]; then
+  echo "qBittorrent $version is already published."
+  exit 0
+fi
+
+asset_field() {
+  local asset_name="$1"
+  local field="$2"
+
+  jq -er --arg name "$asset_name" --arg field "$field" '
+    [.assets[] | select(.name == $name)]
+    | if length == 1 then .[0][$field] else error("expected exactly one matching release asset") end
+  ' "$release_json"
+}
+
+dmg_name="qbittorrent-$version.dmg"
+signature_name="$dmg_name.asc"
+dmg_url="$(asset_field "$dmg_name" "browser_download_url")"
+signature_url="$(asset_field "$signature_name" "browser_download_url")"
+github_digest="$(asset_field "$dmg_name" "digest")"
+sourceforge_url="https://downloads.sourceforge.net/qbittorrent/qbittorrent-mac/qbittorrent-$version/$dmg_name"
+
+github_dmg="$tmp_dir/$dmg_name"
+sourceforge_dmg="$tmp_dir/sourceforge-$dmg_name"
+signature="$tmp_dir/$signature_name"
+signing_key="$tmp_dir/qbittorrent-signing-key.asc"
+
+curl "${curl_args[@]}" "$dmg_url" -o "$github_dmg"
+curl "${curl_args[@]}" "$signature_url" -o "$signature"
+curl "${curl_args[@]}" "$SIGNING_KEY_URL" -o "$signing_key"
+
+export GNUPGHOME="$tmp_dir/gnupg"
+mkdir -m 700 "$GNUPGHOME"
+actual_signing_key="$(
+  gpg --batch --show-keys --with-colons "$signing_key" |
+    awk -F: '$1 == "fpr" { print $10; exit }'
+)"
+if [[ "$actual_signing_key" != "$EXPECTED_SIGNING_KEY" ]]; then
+  echo "Unexpected qBittorrent signing key: $actual_signing_key" >&2
+  exit 1
+fi
+
+gpg --batch --import "$signing_key" >/dev/null 2>&1
+gpg_status="$tmp_dir/gpg-status"
+gpg --batch --status-fd=1 --verify "$signature" "$github_dmg" >"$gpg_status"
+valid_signing_key="$(
+  awk '$2 == "VALIDSIG" { print $NF; exit }' "$gpg_status"
+)"
+if [[ "$valid_signing_key" != "$EXPECTED_SIGNING_KEY" ]]; then
+  echo "The release signature did not come from the pinned qBittorrent signing key." >&2
+  exit 1
+fi
+
+sha256="$(shasum -a 256 "$github_dmg" | awk '{ print $1 }')"
+if [[ "$github_digest" != "sha256:$sha256" ]]; then
+  echo "The signed DMG does not match GitHub's release-asset digest." >&2
+  exit 1
+fi
+
+curl "${curl_args[@]}" "$sourceforge_url" -o "$sourceforge_dmg"
+sourceforge_sha256="$(shasum -a 256 "$sourceforge_dmg" | awk '{ print $1 }')"
+if [[ "$sourceforge_sha256" != "$sha256" ]]; then
+  echo "The SourceForge DMG does not match qBittorrent's signed GitHub release." >&2
+  exit 1
+fi
+
+ruby - "$cask_path" "$version" "$sha256" <<'RUBY'
+path, version, sha256 = ARGV
+contents = File.read(path)
+
+version_pattern = /^  version "[^"]+"$/
+sha256_pattern = /^  sha256 "[0-9a-f]{64}"$/
+
+abort "Expected one version stanza" unless contents.scan(version_pattern).one?
+abort "Expected one sha256 stanza" unless contents.scan(sha256_pattern).one?
+
+contents.sub!(version_pattern, %(  version "#{version}"))
+contents.sub!(sha256_pattern, %(  sha256 "#{sha256}"))
+File.write(path, contents)
+RUBY
+
+echo "Prepared qBittorrent $version with verified SHA-256 $sha256."

@@ -1,0 +1,130 @@
+name: Update qBittorrent
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-qbittorrent
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      needs-update: ${{ steps.release.outputs.needs-update }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+
+      - name: Check the latest stable release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(mktemp)"
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --silent \
+            --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest \
+            -o "$release_json"
+
+          latest="$(
+            jq -er '
+              select(.draft == false and .prerelease == false)
+              | .tag_name
+              | capture("^release-(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$").version
+            ' "$release_json"
+          )"
+          current="$(sed -nE 's/^  version "([^"]+)"$/\1/p' Casks/qbittorrent.rb)"
+          test -n "$current"
+
+          newest="$(printf '%s\n%s\n' "$current" "$latest" | sort --version-sort | tail -n 1)"
+          if [[ "$newest" != "$latest" ]]; then
+            echo "Upstream latest version $latest is older than published version $current." >&2
+            exit 1
+          fi
+
+          echo "version=$latest" >>"$GITHUB_OUTPUT"
+          if [[ "$current" == "$latest" ]]; then
+            echo "needs-update=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "needs-update=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Keep scheduled updates enabled
+        if: steps.release.outputs.needs-update == 'false'
+        run: |
+          set -euo pipefail
+
+          last_commit="$(git log -1 --format=%ct)"
+          age_seconds="$(( $(date +%s) - last_commit ))"
+          if (( age_seconds < 45 * 24 * 60 * 60 )); then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep scheduled updater active"
+          git push origin HEAD:master
+
+  update:
+    if: needs.check.outputs.needs-update == 'true'
+    needs: check
+    runs-on: macos-15
+    steps:
+      - name: Set up Homebrew
+        id: homebrew
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify and publish the official prebuilt DMG
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP: ${{ steps.homebrew.outputs.tap-name }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          scripts/update-qbittorrent "$VERSION"
+          if git diff --quiet -- Casks/qbittorrent.rb; then
+            echo "qBittorrent $VERSION was already published."
+            exit 0
+          fi
+
+          brew trust --cask "$TAP/qbittorrent"
+          brew style "$TAP/qbittorrent"
+          brew audit --cask "$TAP/qbittorrent"
+          brew fetch --force --cask "$TAP/qbittorrent"
+          brew install --cask "$TAP/qbittorrent"
+
+          actual_version="$("/Applications/qBittorrent.app/Contents/MacOS/qbittorrent" --version)"
+          if [[ "$actual_version" != "qBittorrent v$VERSION" ]]; then
+            echo "Installed binary reported unexpected version: $actual_version" >&2
+            exit 1
+          fi
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/qbittorrent.rb
+          git commit -m "qbittorrent $VERSION"
+          git fetch origin master
+          git rebase origin/master
+          git push origin HEAD:master
