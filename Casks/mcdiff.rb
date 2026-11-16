@@ -1,6 +1,6 @@
 cask "mcdiff" do
-  version "0.1.0"
-  sha256 "6f4db852a4b31f0b80af0c5fa35dc39312dd08079c82d137e6cc6cada038eaba"
+  version "0.1.1"
+  sha256 "8f750eeba70c71ac0062949c937eb854a1897ccf33208534322c6ba64e63bd3d"
 
   url "https://github.com/Nek-12/mcdiff/releases/download/v#{version}/McDiff-#{version}-macos-universal.zip"
   name "McDiff"
